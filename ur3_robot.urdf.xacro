@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur3_control">
+
+  <xacro:arg name="name" default="ur3"/>
+  <xacro:arg name="ur_type" default="ur3"/>
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/ur3/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/ur3/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/ur3/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/ur3/visual_parameters.yaml"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur.urdf.xacro"/>
+
+  <link name="gripper_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur3_control/meshes/gripper_link.STL"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur3_control/meshes/gripper_link.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="tool0_to_gripper_link" type="fixed">
+    <parent link="tool0"/>
+    <child link="gripper_link"/>
+    <origin xyz="0 0 0.0678750000000002" rpy="0 -1.5707963267949 3.14159265358979"/>
+  </joint>
+
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur3_control/meshes/camera_link.STL"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur3_control/meshes/camera_link.STL"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="gripper_link_to_camera_link" type="fixed">
+    <parent link="gripper_link"/>
+    <child link="camera_link"/>
+    <origin xyz="-0.00842500000000146 -0.00500000000000025 0.0386999998335454" rpy="0 0 0"/>
+  </joint>
+
+  <link name="gripper_tcp"/>
+
+  <joint name="gripper_link_to_gripper_tcp" type="fixed">
+    <parent link="gripper_link"/>
+    <child link="gripper_tcp"/>
+    <origin xyz="0.107175 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="camera_color_optical_frame"/>
+
+  <joint name="camera_link_to_color_optical_frame" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_color_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <link name="camera_depth_optical_frame"/>
+
+  <joint name="camera_color_to_depth_optical_frame" type="fixed">
+    <parent link="camera_color_optical_frame"/>
+    <child link="camera_depth_optical_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>
