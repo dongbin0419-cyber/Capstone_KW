@@ -72,13 +72,11 @@ WS_SETUP = "/home/dongbin/vs_ws/install/setup.bash"
 URDF = "/home/dongbin/vs_ws/src/ur3_control/urdf/ur3_robot.urdf.xacro"
 ```
 
-다른 PC 사용자명이 다르면 코드의 이 경로를 바꿔야 합니다.
-
-예를 들어 사용자명이 `robot`이면:
+예를 들어 사용자명이 `name`이면:
 
 ```python
-WS_SETUP = "/home/robot/vs_ws/install/setup.bash"
-URDF = "/home/robot/vs_ws/src/ur3_control/urdf/ur3_robot.urdf.xacro"
+WS_SETUP = "/home/name/file_name/install/setup.bash"
+URDF = "/home/name/file_name/src/ur3_control/urdf/ur3_robot.urdf.xacro"
 ```
 
 ---
