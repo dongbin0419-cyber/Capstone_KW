@@ -330,6 +330,21 @@ class PointCloudRansacTest(Node):
             self.model = YOLO(model_path, task="detect")
 
             self.command_ready = True
+            self.latest_bottle_base = None
+            self.latest_bottle_size = None
+            self.latest_main_axis_base = None
+
+            self.target_lock_buffer.clear()
+            self.target_locked = False
+            self.locked_bottle_base = None
+            self.target_ever_locked = False
+
+            self.motion_done = False
+            self.tracking_mode = False
+            self.tracking_done = False
+            self.advance_done = False
+            self.advancing = False
+            self.scene_initialized = False
 
             self.get_logger().warn(
                 f"/grasp_command 수신: scene={scene}, pose={pose}, object={obj}"
@@ -1048,7 +1063,7 @@ class PointCloudRansacTest(Node):
         target_pos = [float(pos_dict[name]) for name in joint_order]
 
         x_step = 0.006
-        y_step = 0.004
+        y_step = 0.002
 
         # 화면 좌우 보정
         if abs(error_x) >= self.pixel_tolerance:
@@ -2321,7 +2336,11 @@ class PointCloudRansacTest(Node):
                 current_cloud,
                 centroid_cam
             )
-            
+
+            if bottle_base is None:
+                self.get_logger().warn("bottle_base transform failed. Skip this frame.")
+                return
+
             if table_inliers is not None and not self.bed_mode:
                 table_base = self.transform_points_to_base(current_cloud, table_inliers)
 
@@ -2336,9 +2355,6 @@ class PointCloudRansacTest(Node):
                         )
                         bottle_base[2] = float(min_target_z)
 
-            if bottle_base is None:
-                self.get_logger().warn("bottle_base transform failed. Skip this frame.")
-                return
 
             self.get_logger().info(
                 f"target base = "
