@@ -134,6 +134,8 @@ class PointCloudRansacTest(Node):
 
         self._cloud_lock = threading.RLock()
         self.show_visualization = os.environ.get('DISPLAY') is not None
+        self.camera_y_offset_px = 0
+        self.pixel_tolerance_y = 20
 
         try:
             self.model = YOLO(config["model_path"], task='detect')
@@ -261,6 +263,11 @@ class PointCloudRansacTest(Node):
         self.latest_bottle_size = None
         self.latest_main_axis_base = None
         self.latest_bottle_pose_type = "standing"
+        self.target_lock_need = 5
+        self.target_lock_buffer = []
+        self.target_locked = False
+        self.locked_bottle_base = None
+        self.target_lock_spread_limit = 0.03  # 3cm
 
         # [변경] 비동기 중복 요청 렉 방지를 위해 제어 주기를 2.5초로 여유롭게 늘림
         self.base_frame = 'base_link'
@@ -1018,6 +1025,62 @@ class PointCloudRansacTest(Node):
         self.get_logger().warn(
             f"SCALED X 보정: error_x={error_x}, shoulder_pan step={np.degrees(step):.2f} deg"
         )
+        
+    def move_xy_by_bbox_error(self, error_x, error_y):
+        if self.current_joint_state is None:
+            self.get_logger().warn("XY 보정 실패: joint_state 없음")
+            return
+
+        joint_order = [
+            "shoulder_pan_joint",
+            "shoulder_lift_joint",
+            "elbow_joint",
+            "wrist_1_joint",
+            "wrist_2_joint",
+            "wrist_3_joint"
+        ]
+
+        pos_dict = dict(zip(
+            self.current_joint_state.name,
+            self.current_joint_state.position
+        ))
+
+        target_pos = [float(pos_dict[name]) for name in joint_order]
+
+        x_step = 0.006
+        y_step = 0.004
+
+        # 화면 좌우 보정
+        if abs(error_x) >= self.pixel_tolerance:
+            if error_x > 0:
+                target_pos[0] -= x_step
+            else:
+                target_pos[0] += x_step
+
+        # 화면 상하 보정
+        # 물체가 화면 아래에 있으면 TCP를 아래로 맞추는 방향
+        if abs(error_y) >= self.pixel_tolerance_y:
+            if error_y > 0:
+                target_pos[1] += y_step
+            else:
+                target_pos[1] -= y_step
+
+        traj = JointTrajectory()
+        traj.joint_names = joint_order
+
+        point = JointTrajectoryPoint()
+        point.positions = target_pos
+        point.time_from_start.sec = 0
+        point.time_from_start.nanosec = 300_000_000
+
+        traj.points.append(point)
+        self.joint_traj_pub.publish(traj)
+
+        self.get_logger().warn(
+            f"XY 보정: error_x={error_x}, error_y={error_y}, "
+            f"pan_step={np.degrees(x_step):.2f}, "
+            f"lift_step={np.degrees(y_step):.2f}"
+        )
 
     def move_group_goal_response_callback(self, future):
         goal_handle = future.result()
@@ -1070,6 +1133,48 @@ class PointCloudRansacTest(Node):
     def get_latest_cloud(self):
         with self._cloud_lock:
             return self.cloud_msg
+            
+    def update_locked_target(self, bottle_base):
+        p = np.array(bottle_base, dtype=np.float64)
+
+        if self.target_locked:
+            return self.locked_bottle_base
+
+        self.target_lock_buffer.append(p)
+
+        if len(self.target_lock_buffer) > self.target_lock_need:
+            self.target_lock_buffer.pop(0)
+
+        if len(self.target_lock_buffer) < self.target_lock_need:
+            self.get_logger().warn(
+                f"물병 좌표 안정화 중: "
+                f"{len(self.target_lock_buffer)}/{self.target_lock_need}"
+            )
+            return None
+
+        pts = np.array(self.target_lock_buffer)
+        mean_pt = np.mean(pts, axis=0)
+
+        spread = np.max(np.linalg.norm(pts - mean_pt, axis=1))
+
+        if spread > self.target_lock_spread_limit:
+            self.get_logger().warn(
+                f"좌표 흔들림 큼: spread={spread*100:.1f}cm "
+                f"> {self.target_lock_spread_limit*100:.1f}cm → 다시 수집"
+            )
+            self.target_lock_buffer.clear()
+            return None
+
+        self.locked_bottle_base = mean_pt
+        self.target_locked = True
+        self.target_ever_locked = True
+
+        self.get_logger().warn(
+            f"물병 좌표 LOCK 완료: "
+            f"x={mean_pt[0]:.3f}, y={mean_pt[1]:.3f}, z={mean_pt[2]:.3f}"
+        )
+
+        return self.locked_bottle_base
         
 
     def shutdown_once(self):
@@ -1223,8 +1328,15 @@ class PointCloudRansacTest(Node):
             return None, None
 
         a, b, c, d = plane_model
-        dist = np.abs(a * bottle_pts[:, 0] + b * bottle_pts[:, 1] + c * bottle_pts[:, 2] + d) / np.sqrt(a*a + b*b + c*c)
-        obj_pts = bottle_pts[dist > 0.025]
+        signed_dist = (
+            a * bottle_pts[:, 0]
+            + b * bottle_pts[:, 1]
+            + c * bottle_pts[:, 2]
+            + d
+        ) / np.sqrt(a*a + b*b + c*c)
+
+        # 책상면에서 4.5cm 이상 위 점만 물체 후보
+        obj_pts = bottle_pts[signed_dist > 0.045]
         if len(obj_pts) < 20:
             return None, None
 
@@ -1959,7 +2071,10 @@ class PointCloudRansacTest(Node):
         # 도착 후 X 보정 모드
         if self.tracking_mode and not self.tracking_done:
             image_center_x = w // 2 + self.camera_x_offset_px
+            image_center_y = h // 2 + self.camera_y_offset_px
+
             error_x = cx_color - image_center_x
+            error_y = cy_color - image_center_y
 
             cv2.line(
                 img,
@@ -1983,7 +2098,7 @@ class PointCloudRansacTest(Node):
                 f"YOLO X TRACK: bbox_cx={cx_color}, img_cx={image_center_x}, error_x={error_x}"
             )
 
-            if abs(error_x) < self.pixel_tolerance:
+            if abs(error_x) < self.pixel_tolerance and abs(error_y) < self.pixel_tolerance_y:
                 stop = TwistStamped()
                 stop.header.stamp = self.get_clock().now().to_msg()
                 stop.header.frame_id = self.get_robot_base_frame()
@@ -1997,7 +2112,7 @@ class PointCloudRansacTest(Node):
                 self.show_debug_image(img)
                 return
 
-            self.move_side_by_bbox_error(error_x)
+            self.move_xy_by_bbox_error(error_x, error_y)
             self.show_debug_image(img)
             return
 
@@ -2206,6 +2321,20 @@ class PointCloudRansacTest(Node):
                 current_cloud,
                 centroid_cam
             )
+            
+            if table_inliers is not None and not self.bed_mode:
+                table_base = self.transform_points_to_base(current_cloud, table_inliers)
+
+                if table_base is not None:
+                    table_z = np.median(table_base[:, 2])
+                    min_target_z = table_z + 0.06
+
+                    if bottle_base[2] < min_target_z:
+                        self.get_logger().warn(
+                            f"target z too low -> clamp: "
+                            f"{bottle_base[2]:.3f} -> {min_target_z:.3f}"
+                        )
+                        bottle_base[2] = float(min_target_z)
 
             if bottle_base is None:
                 self.get_logger().warn("bottle_base transform failed. Skip this frame.")
@@ -2249,9 +2378,14 @@ class PointCloudRansacTest(Node):
                     self.get_logger().warn(f"Rejected unsafe target: {bottle_base}")
                     return
 
-                self.latest_bottle_base = bottle_base
+                locked_target = self.update_locked_target(bottle_base)
+
+                if locked_target is None:
+                    self.show_debug_image(img)
+                    return
+
+                self.latest_bottle_base = locked_target.tolist()
                 self.latest_bottle_size = bottle_info['size']
-                self.target_ever_locked = True
 
                 self.publish_bottle_marker(
                     self.latest_bottle_base,
